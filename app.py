@@ -142,8 +142,38 @@ def backtest_realistic(d, hold_days=20, rr=2.0):
     return pd.DataFrame(rows)
 
 # -------------------- screener --------------------
-def score_ticker(ticker, period="1y"):
-    df = get_data(ticker, period)
+@st.cache_data(ttl=900, show_spinner=False)
+def get_batch_data(tickers_tuple, period="1y"):
+    """Fetch many tickers in one batched, threaded call instead of looping
+    one-by-one. Much faster and far less likely to be rate-limited than
+    scanning 100-200 tickers sequentially."""
+    tickers = list(tickers_tuple)
+    try:
+        raw = yf.download(
+            tickers=tickers, period=period, interval="1d",
+            auto_adjust=True, progress=False, group_by="ticker", threads=True,
+        )
+    except Exception:
+        return {}
+    out = {}
+    if raw is None or raw.empty:
+        return out
+    for t in tickers:
+        try:
+            if len(tickers) == 1:
+                df = raw.copy()
+            else:
+                df = raw[t].copy() if t in raw.columns.get_level_values(0) else pd.DataFrame()
+            df = df.dropna()
+            required = {"Open", "High", "Low", "Close", "Volume"}
+            if df.empty or not required.issubset(set(df.columns)):
+                continue
+            out[t] = df
+        except Exception:
+            continue
+    return out
+
+def score_from_df(ticker, df):
     if df.empty or len(df) < 210:
         return None
     d = prepare(df)
@@ -237,20 +267,29 @@ if mode == "Single Stock":
         st.warning("Selected history me qualifying BUY signals nahi mile.")
 
 else:  # Screener
-    st.sidebar.caption("Default watchlist ya apni comma-separated list daalein")
+    st.sidebar.caption("Default watchlist ya apni comma-separated list daalein (Nifty 200/500 bhi chalega)")
     custom = st.sidebar.text_area("Tickers (NSE, comma-separated)", "")
     tickers = [t.strip().upper() for t in custom.split(",") if t.strip()] if custom.strip() else DEFAULT_WATCHLIST
     tickers = [t if t.endswith(".NS") else t + ".NS" for t in tickers]
 
     st.subheader(f"Screener - {len(tickers)} stocks")
-    progress = st.progress(0.0, text="Scanning...")
+    if len(tickers) > 250:
+        st.warning("250 se zyada tickers ek saath scan karna free hosting pe unreliable ho sakta hai. "
+                   "Behtar hoga list ko chhote batches (jaise 150-200) mein todo.")
+
+    with st.spinner(f"Fetching data for {len(tickers)} tickers..."):
+        batch = get_batch_data(tuple(tickers), period)
+
     results = []
-    for i, t in enumerate(tickers):
-        r = score_ticker(t, period)
+    for t in tickers:
+        df = batch.get(t, pd.DataFrame())
+        r = score_from_df(t, df)
         if r is not None:
             results.append(r)
-        progress.progress((i + 1) / len(tickers), text=f"Scanning {t}...")
-    progress.empty()
+
+    missing = len(tickers) - len(results)
+    if missing:
+        st.caption(f"{missing} ticker(s) skip hue (invalid symbol ya kaafi history nahi mili).")
 
     if results:
         res_df = pd.DataFrame(results).sort_values(["Score", "RSI"], ascending=[False, False])
