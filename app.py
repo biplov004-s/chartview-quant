@@ -3,21 +3,39 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="Chartview Quant", page_icon="📈", layout="wide")
+st.set_page_config(page_title="Chartview Quant", page_icon="ðŸ“ˆ", layout="wide")
 
-st.title("📈 Chartview Quant")
-st.caption("Eagle-style Quant Research • Screener • Backtest • Paper Trading")
+st.title("ðŸ“ˆ Chartview Quant")
+st.caption("Eagle-style Quant Research â€¢ Screener â€¢ Backtest â€¢ Paper Trading")
+st.caption("Created by Biplov Soren")
 
-# -------------------- helpers --------------------
-@st.cache_data(ttl=900)
+DEFAULT_WATCHLIST = [
+    "RELIANCE.NS", "TCS.NS", "HDFCBANK.NS", "INFY.NS", "ICICIBANK.NS",
+    "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "LT.NS", "KOTAKBANK.NS",
+    "AXISBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "BAJFINANCE.NS",
+    "HCLTECH.NS", "ASIANPAINT.NS", "WIPRO.NS", "ADANIENT.NS", "TATAMOTORS.NS",
+]
+
+# -------------------- data --------------------
+@st.cache_data(ttl=900, show_spinner=False)
 def get_data(ticker, period="2y"):
-    df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False)
-    if df.empty:
+    """Fetch OHLCV data. Returns empty DataFrame on any failure (bad ticker,
+    network issue, etc.) instead of raising, so the UI can show a clean error."""
+    try:
+        df = yf.download(ticker, period=period, interval="1d", auto_adjust=True, progress=False)
+    except Exception:
+        return pd.DataFrame()
+    if df is None or df.empty:
         return pd.DataFrame()
     if isinstance(df.columns, pd.MultiIndex):
         df.columns = df.columns.get_level_values(0)
-    return df.dropna()
+    df = df.dropna()
+    required = {"Open", "High", "Low", "Close", "Volume"}
+    if not required.issubset(set(df.columns)):
+        return pd.DataFrame()
+    return df
 
+# -------------------- indicators --------------------
 def rsi(s, n=14):
     d = s.diff()
     gain = d.clip(lower=0).ewm(alpha=1/n, adjust=False).mean()
@@ -61,88 +79,174 @@ def prepare(df):
     x["VolumeStrong"] = x["VolRatio"] >= 1.5
     x["Breakout"] = x["Close"] > x["PrevHigh"]
     x["BUY"] = x["BullTrend"] & x["Momentum"] & x["TrendStrong"] & x["VolumeStrong"] & x["Breakout"]
+    x["Score"] = (
+        x["BullTrend"].astype(int) + x["Momentum"].astype(int) + x["TrendStrong"].astype(int)
+        + x["VolumeStrong"].astype(int) + x["Breakout"].astype(int)
+    )
     return x
+
+# -------------------- realistic backtest --------------------
+def backtest_realistic(d, hold_days=20, rr=2.0):
+    """Simulate each BUY signal as an actual trade: hold until stop-loss or
+    target is hit (using intraday High/Low), or exit at close after
+    `hold_days` if neither is hit. This is far closer to real trading than a
+    naive 'next day return' check."""
+    rows = []
+    signal_idx = np.where(d["BUY"].values)[0]
+    n = len(d)
+    for i in signal_idx:
+        if i + 1 >= n:
+            continue
+        entry_date = d.index[i]
+        entry = float(d["Close"].iloc[i])
+        sl = float(d["SwingLow20"].iloc[i])
+        if not np.isfinite(sl) or sl >= entry:
+            sl = entry - 2 * float(d["ATR"].iloc[i])
+        risk_per_share = max(entry - sl, 0.01)
+        target = entry + rr * risk_per_share
+
+        outcome, exit_price, exit_date = None, None, None
+        window_end = min(i + 1 + hold_days, n)
+        for j in range(i + 1, window_end):
+            low_j = float(d["Low"].iloc[j])
+            high_j = float(d["High"].iloc[j])
+            if low_j <= sl:
+                outcome, exit_price, exit_date = "SL", sl, d.index[j]
+                break
+            if high_j >= target:
+                outcome, exit_price, exit_date = "TARGET", target, d.index[j]
+                break
+        if outcome is None:
+            j = window_end - 1
+            outcome = "TIME EXIT"
+            exit_price = float(d["Close"].iloc[j])
+            exit_date = d.index[j]
+
+        ret_pct = (exit_price - entry) / entry * 100
+        rows.append({
+            "Entry date": entry_date, "Exit date": exit_date, "Outcome": outcome,
+            "Entry": round(entry, 2), "Exit": round(exit_price, 2), "Return %": round(ret_pct, 2),
+        })
+    return pd.DataFrame(rows)
+
+# -------------------- screener --------------------
+def score_ticker(ticker, period="1y"):
+    df = get_data(ticker, period)
+    if df.empty or len(df) < 210:
+        return None
+    d = prepare(df)
+    last = d.iloc[-1]
+    return {
+        "Ticker": ticker.replace(".NS", ""),
+        "Price": round(float(last["Close"]), 2),
+        "Score": int(last["Score"]),
+        "Signal": "BUY" if bool(last["BUY"]) else "WAIT",
+        "RSI": round(float(last["RSI"]), 1),
+        "ADX": round(float(last["ADX"]), 1),
+        "Vol x": round(float(last["VolRatio"]), 2),
+    }
 
 # -------------------- sidebar --------------------
 st.sidebar.header("Controls")
-ticker = st.sidebar.text_input("NSE ticker", "RELIANCE.NS")
+mode = st.sidebar.radio("Mode", ["Screener", "Single Stock"])
 period = st.sidebar.selectbox("History", ["1y", "2y", "5y"], index=1)
-capital = st.sidebar.number_input("Paper capital (₹)", min_value=1000.0, value=100000.0, step=5000.0)
-risk_pct = st.sidebar.slider("Risk per trade %", 0.5, 3.0, 1.0, 0.5)
 
-df = get_data(ticker, period)
+if mode == "Single Stock":
+    ticker = st.sidebar.text_input("NSE ticker", "RELIANCE.NS")
+    capital = st.sidebar.number_input("Paper capital (â‚¹)", min_value=1000.0, value=100000.0, step=5000.0)
+    risk_pct = st.sidebar.slider("Risk per trade %", 0.5, 3.0, 1.0, 0.5)
+    hold_days = st.sidebar.slider("Backtest max holding days", 5, 40, 20, 5)
 
-if df.empty:
-    st.error("Data nahi mila. NSE ticker format use karein, example: RELIANCE.NS")
-    st.stop()
+    df = get_data(ticker, period)
+    if df.empty:
+        st.error("Data nahi mila. Sahi NSE ticker format use karein, jaise RELIANCE.NS. "
+                  "Agar ticker sahi hai to ho sakta hai network/data-provider issue ho â€” thodi der baad try karein.")
+        st.stop()
+    if len(df) < 210:
+        st.warning("Itna history nahi hai ki EMA200 jaise indicators reliable ho paayein. Lambi period select karein.")
+        st.stop()
 
-d = prepare(df)
-last = d.iloc[-1]
+    d = prepare(df)
+    last = d.iloc[-1]
 
-# -------------------- top metrics --------------------
-c1, c2, c3, c4, c5 = st.columns(5)
-c1.metric("Price", f"₹{last['Close']:,.2f}")
-c2.metric("RSI", f"{last['RSI']:.1f}")
-c3.metric("ADX", f"{last['ADX']:.1f}")
-c4.metric("Volume", f"{last['VolRatio']:.2f}x")
-c5.metric("Signal", "🟢 BUY" if bool(last["BUY"]) else "⚪ WAIT")
+    c1, c2, c3, c4, c5 = st.columns(5)
+    c1.metric("Price", f"â‚¹{last['Close']:,.2f}")
+    c2.metric("RSI", f"{last['RSI']:.1f}")
+    c3.metric("ADX", f"{last['ADX']:.1f}")
+    c4.metric("Volume", f"{last['VolRatio']:.2f}x")
+    c5.metric("Signal", "ðŸŸ¢ BUY" if bool(last["BUY"]) else "âšª WAIT")
 
-# -------------------- dashboard --------------------
-st.subheader("All-In-One Market Dashboard")
+    st.subheader("All-In-One Market Dashboard")
+    rows = [
+        ("Direction", "BULLISH" if last["EMA20"] > last["EMA50"] else "BEARISH"),
+        ("Trend", "UP" if last["+DI"] > last["-DI"] else "DOWN"),
+        ("Trend Strength", "STRONG" if last["ADX"] >= 25 else "NEUTRAL/WEAK"),
+        ("Momentum", "STRONG" if last["RSI"] >= 60 else ("WEAK" if last["RSI"] <= 40 else "NEUTRAL")),
+        ("Volume", "STRONG" if last["VolRatio"] >= 1.5 else ("WEAK" if last["VolRatio"] < .8 else "NEUTRAL")),
+        ("Breakout", "BREAKOUT" if last["Breakout"] else "NONE"),
+    ]
+    st.dataframe(pd.DataFrame(rows, columns=["Factor", "Status"]), use_container_width=True, hide_index=True)
 
-rows = [
-    ("Direction", "BULLISH" if last["EMA20"] > last["EMA50"] else "BEARISH"),
-    ("Trend", "UP" if last["+DI"] > last["-DI"] else "DOWN"),
-    ("Trend Strength", "STRONG" if last["ADX"] >= 25 else "NEUTRAL/WEAK"),
-    ("Momentum", "STRONG" if last["RSI"] >= 60 else ("WEAK" if last["RSI"] <= 40 else "NEUTRAL")),
-    ("Volume", "STRONG" if last["VolRatio"] >= 1.5 else ("WEAK" if last["VolRatio"] < .8 else "NEUTRAL")),
-    ("Breakout", "BREAKOUT" if last["Breakout"] else "NONE"),
-]
-dash = pd.DataFrame(rows, columns=["Factor", "Status"])
-st.dataframe(dash, use_container_width=True, hide_index=True)
+    st.subheader("Price & EMA")
+    st.line_chart(d[["Close", "EMA20", "EMA50", "EMA200"]].tail(250), use_container_width=True)
 
-# -------------------- chart --------------------
-st.subheader("Price & EMA")
-chart = d[["Close", "EMA20", "EMA50", "EMA200"]].tail(250)
-st.line_chart(chart, use_container_width=True)
+    st.subheader("Paper Trade Plan")
+    if bool(last["BUY"]):
+        entry = float(last["Close"])
+        sl = float(last["SwingLow20"])
+        if not np.isfinite(sl) or sl >= entry:
+            sl = entry - 2 * float(last["ATR"])
+        risk_per_share = max(entry - sl, 0.01)
+        risk_amount = capital * risk_pct / 100
+        shares = int(risk_amount / risk_per_share)
+        target = entry + 2 * risk_per_share
+        st.success("A-GRADE BUY SETUP")
+        a, b, c, e = st.columns(4)
+        a.metric("Entry", f"â‚¹{entry:,.2f}")
+        b.metric("Stop Loss", f"â‚¹{sl:,.2f}")
+        c.metric("Target 1 (1:2)", f"â‚¹{target:,.2f}")
+        e.metric("Shares (paper)", f"{max(shares, 0)}")
+    else:
+        st.info("WAIT â€” current candle does not satisfy all Eagle-style BUY filters.")
 
-# -------------------- trade plan --------------------
-st.subheader("Paper Trade Plan")
-if bool(last["BUY"]):
-    entry = float(last["Close"])
-    sl = float(last["SwingLow20"])
-    if not np.isfinite(sl) or sl >= entry:
-        sl = entry - 2 * float(last["ATR"])
-    risk_per_share = max(entry - sl, 0.01)
-    risk_amount = capital * risk_pct / 100
-    shares = int(risk_amount / risk_per_share)
-    target = entry + 2 * risk_per_share
-    st.success("A-GRADE BUY SETUP")
-    a,b,c,d4 = st.columns(4)
-    a.metric("Entry", f"₹{entry:,.2f}")
-    b.metric("Stop Loss", f"₹{sl:,.2f}")
-    c.metric("Target 1 (1:2)", f"₹{target:,.2f}")
-    d4.metric("Shares (paper)", f"{max(shares,0)}")
-else:
-    st.info("WAIT — current candle does not satisfy all Eagle-style BUY filters.")
+    st.subheader("Realistic Backtest (entry â†’ SL/Target/Time-exit)")
+    trades = backtest_realistic(d, hold_days=hold_days, rr=2.0)
+    if len(trades):
+        win_rate = (trades["Return %"] > 0).mean() * 100
+        avg_ret = trades["Return %"].mean()
+        compounded = (1 + trades["Return %"] / 100).prod() - 1
+        q1, q2, q3, q4 = st.columns(4)
+        q1.metric("Trades", str(len(trades)))
+        q2.metric("Win Rate", f"{win_rate:.1f}%")
+        q3.metric("Avg Return / Trade", f"{avg_ret:.2f}%")
+        q4.metric("Compounded Return", f"{compounded*100:.1f}%")
+        st.dataframe(trades.sort_values("Entry date", ascending=False), use_container_width=True, hide_index=True)
+    else:
+        st.warning("Selected history me qualifying BUY signals nahi mile.")
 
-# -------------------- backtest --------------------
-st.subheader("Simple Historical Backtest")
-bt = d.copy()
-bt["Entry"] = bt["BUY"]
-bt["Ret"] = bt["Close"].pct_change().shift(-1)
-trades = bt.loc[bt["Entry"], "Ret"].dropna()
-if len(trades):
-    win = (trades > 0).mean() * 100
-    total = (1 + trades).prod() - 1
-    q1,q2,q3 = st.columns(3)
-    q1.metric("Trades", str(len(trades)))
-    q2.metric("Win Rate", f"{win:.1f}%")
-    q3.metric("Next-day compounded return", f"{total*100:.1f}%")
-    st.dataframe(pd.DataFrame({"Trade date": trades.index, "Next-day return %": trades.values*100}).tail(50),
-                 use_container_width=True, hide_index=True)
-else:
-    st.warning("Selected history me qualifying BUY signals nahi mile.")
+else:  # Screener
+    st.sidebar.caption("Default watchlist ya apni comma-separated list daalein")
+    custom = st.sidebar.text_area("Tickers (NSE, comma-separated)", "")
+    tickers = [t.strip().upper() for t in custom.split(",") if t.strip()] if custom.strip() else DEFAULT_WATCHLIST
+    tickers = [t if t.endswith(".NS") else t + ".NS" for t in tickers]
+
+    st.subheader(f"Screener â€” {len(tickers)} stocks")
+    progress = st.progress(0.0, text="Scanning...")
+    results = []
+    for i, t in enumerate(tickers):
+        r = score_ticker(t, period)
+        if r is not None:
+            results.append(r)
+        progress.progress((i + 1) / len(tickers), text=f"Scanning {t}...")
+    progress.empty()
+
+    if results:
+        res_df = pd.DataFrame(results).sort_values(["Score", "RSI"], ascending=[False, False])
+        buys = res_df[res_df["Signal"] == "BUY"]
+        st.metric("BUY signals found", len(buys))
+        st.dataframe(res_df, use_container_width=True, hide_index=True)
+    else:
+        st.error("Koi data nahi mila. Tickers check karein ya thodi der baad try karein.")
 
 st.divider()
 st.caption("Research/paper-trading tool. Signals are not guaranteed and are not investment advice.")
