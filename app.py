@@ -3,10 +3,10 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 
-st.set_page_config(page_title="Chartview Quant", page_icon="ðŸ“ˆ", layout="wide")
+st.set_page_config(page_title="Chartview Quant", page_icon=":chart_with_upwards_trend:", layout="wide")
 
-st.title("ðŸ“ˆ Chartview Quant")
-st.caption("Eagle-style Quant Research â€¢ Screener â€¢ Backtest â€¢ Paper Trading")
+st.title("Chartview Quant")
+st.caption("Eagle-style Quant Research - Screener - Backtest - Paper Trading")
 st.caption("Created by Biplov Soren")
 
 DEFAULT_WATCHLIST = [
@@ -14,6 +14,18 @@ DEFAULT_WATCHLIST = [
     "SBIN.NS", "BHARTIARTL.NS", "ITC.NS", "LT.NS", "KOTAKBANK.NS",
     "AXISBANK.NS", "MARUTI.NS", "SUNPHARMA.NS", "TITAN.NS", "BAJFINANCE.NS",
     "HCLTECH.NS", "ASIANPAINT.NS", "WIPRO.NS", "ADANIENT.NS", "TATAMOTORS.NS",
+    "ULTRACEMCO.NS", "NESTLEIND.NS", "BAJAJFINSV.NS", "POWERGRID.NS", "NTPC.NS",
+    "M&M.NS", "TATASTEEL.NS", "JSWSTEEL.NS", "HINDALCO.NS", "ONGC.NS",
+    "COALINDIA.NS", "GRASIM.NS", "DRREDDY.NS", "CIPLA.NS", "DIVISLAB.NS",
+    "EICHERMOT.NS", "HEROMOTOCO.NS", "BAJAJ-AUTO.NS", "BRITANNIA.NS", "TATACONSUM.NS",
+    "APOLLOHOSP.NS", "ADANIPORTS.NS", "BPCL.NS", "IOC.NS", "SBILIFE.NS",
+    "HDFCLIFE.NS", "INDUSINDBK.NS", "TECHM.NS", "SHREECEM.NS", "UPL.NS",
+    "PIDILITIND.NS", "DABUR.NS", "GODREJCP.NS", "HAVELLS.NS", "SIEMENS.NS",
+    "DLF.NS", "VEDL.NS", "BANKBARODA.NS", "PNB.NS", "CANBK.NS",
+    "AMBUJACEM.NS", "ACC.NS", "MOTHERSON.NS", "TVSMOTOR.NS", "BOSCHLTD.NS",
+    "MARICO.NS", "COLPAL.NS", "BERGEPAINT.NS", "PAGEIND.NS", "TRENT.NS",
+    "ZOMATO.NS", "NAUKRI.NS", "PIIND.NS", "TORNTPHARM.NS", "LUPIN.NS",
+    "AUROPHARMA.NS", "BIOCON.NS", "GAIL.NS", "IGL.NS", "PETRONET.NS",
 ]
 
 # -------------------- data --------------------
@@ -153,14 +165,14 @@ period = st.sidebar.selectbox("History", ["1y", "2y", "5y"], index=1)
 
 if mode == "Single Stock":
     ticker = st.sidebar.text_input("NSE ticker", "RELIANCE.NS")
-    capital = st.sidebar.number_input("Paper capital (â‚¹)", min_value=1000.0, value=100000.0, step=5000.0)
+    capital = st.sidebar.number_input("Paper capital (Rs)", min_value=1000.0, value=100000.0, step=5000.0)
     risk_pct = st.sidebar.slider("Risk per trade %", 0.5, 3.0, 1.0, 0.5)
     hold_days = st.sidebar.slider("Backtest max holding days", 5, 40, 20, 5)
 
     df = get_data(ticker, period)
     if df.empty:
         st.error("Data nahi mila. Sahi NSE ticker format use karein, jaise RELIANCE.NS. "
-                  "Agar ticker sahi hai to ho sakta hai network/data-provider issue ho â€” thodi der baad try karein.")
+                  "Agar ticker sahi hai to ho sakta hai network/data-provider issue ho - thodi der baad try karein.")
         st.stop()
     if len(df) < 210:
         st.warning("Itna history nahi hai ki EMA200 jaise indicators reliable ho paayein. Lambi period select karein.")
@@ -170,11 +182,11 @@ if mode == "Single Stock":
     last = d.iloc[-1]
 
     c1, c2, c3, c4, c5 = st.columns(5)
-    c1.metric("Price", f"â‚¹{last['Close']:,.2f}")
+    c1.metric("Price", f"Rs {last['Close']:,.2f}")
     c2.metric("RSI", f"{last['RSI']:.1f}")
     c3.metric("ADX", f"{last['ADX']:.1f}")
     c4.metric("Volume", f"{last['VolRatio']:.2f}x")
-    c5.metric("Signal", "ðŸŸ¢ BUY" if bool(last["BUY"]) else "âšª WAIT")
+    c5.metric("Signal", "BUY" if bool(last["BUY"]) else "WAIT")
 
     st.subheader("All-In-One Market Dashboard")
     rows = [
@@ -202,14 +214,14 @@ if mode == "Single Stock":
         target = entry + 2 * risk_per_share
         st.success("A-GRADE BUY SETUP")
         a, b, c, e = st.columns(4)
-        a.metric("Entry", f"â‚¹{entry:,.2f}")
-        b.metric("Stop Loss", f"â‚¹{sl:,.2f}")
-        c.metric("Target 1 (1:2)", f"â‚¹{target:,.2f}")
+        a.metric("Entry", f"Rs {entry:,.2f}")
+        b.metric("Stop Loss", f"Rs {sl:,.2f}")
+        c.metric("Target 1 (1:2)", f"Rs {target:,.2f}")
         e.metric("Shares (paper)", f"{max(shares, 0)}")
     else:
-        st.info("WAIT â€” current candle does not satisfy all Eagle-style BUY filters.")
+        st.info("WAIT - current candle does not satisfy all Eagle-style BUY filters.")
 
-    st.subheader("Realistic Backtest (entry â†’ SL/Target/Time-exit)")
+    st.subheader("Realistic Backtest (entry -> SL/Target/Time-exit)")
     trades = backtest_realistic(d, hold_days=hold_days, rr=2.0)
     if len(trades):
         win_rate = (trades["Return %"] > 0).mean() * 100
@@ -230,7 +242,7 @@ else:  # Screener
     tickers = [t.strip().upper() for t in custom.split(",") if t.strip()] if custom.strip() else DEFAULT_WATCHLIST
     tickers = [t if t.endswith(".NS") else t + ".NS" for t in tickers]
 
-    st.subheader(f"Screener â€” {len(tickers)} stocks")
+    st.subheader(f"Screener - {len(tickers)} stocks")
     progress = st.progress(0.0, text="Scanning...")
     results = []
     for i, t in enumerate(tickers):
